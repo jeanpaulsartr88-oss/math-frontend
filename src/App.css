@@ -1,0 +1,202 @@
+/* =========================================
+   MATH STUDIO: PROFESSIONAL UI (LIGHT THEME)
+   ========================================= */
+
+:root {
+  --primary-blue: #007aff;
+  --bg-light: #f5f6f8;
+  --border-color: #e5e5ea;
+  --text-main: #333333;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-light);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+}
+
+.app-shell {
+  max-width: 500px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- ДИСПЛЕЙ КАЛЬКУЛЯТОРА --- */
+.pro-display {
+  background: #ffffff;
+  padding: 30px 20px;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pro-latex-view {
+  font-size: 1.8rem;
+  color: #000;
+  width: 100%;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.pro-placeholder {
+  opacity: 0.3;
+}
+
+/* --- КНОПКА ОТПРАВКИ --- */
+.pro-submit-btn {
+  background: var(--primary-blue);
+  color: white;
+  border: none;
+  padding: 16px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 15px;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.2);
+  transition: transform 0.1s, background 0.2s;
+}
+
+.pro-submit-btn:active {
+  transform: scale(0.98);
+  background: #005bb5;
+}
+
+.pro-submit-btn:disabled {
+  background: #b0b0b0;
+  box-shadow: none;
+}
+
+/* --- ТУЛБАР И ВКЛАДКИ --- */
+.pro-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.pro-tabs {
+  display: flex;
+  background: #eeeeef;
+  padding: 4px;
+  border-radius: 10px;
+  margin: 0 10px 10px;
+  gap: 4px;
+}
+
+.pro-tabs button {
+  flex: 1;
+  border: none;
+  padding: 8px;
+  border-radius: 8px;
+  background: transparent;
+  color: #8e8e93;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pro-tabs button.active {
+  background: #ffffff;
+  color: #000000;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* --- СЕТКА КНОПОК (ИСПРАВЛЕННАЯ) --- */
+.pro-keys-container {
+  padding: 10px;
+  background: #f2f2f7; /* Серый фон как в iOS клавиатуре */
+}
+
+.pro-grid-basic {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr); /* СТРОГО 4 КОЛОНКИ */
+  gap: 8px;
+}
+
+.pro-grid-6x4 {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr); /* 5 колонок для функций */
+  gap: 8px;
+}
+
+.pro-key, .pro-btn {
+  background: #ffffff;
+  border: 1px solid #d1d1d6;
+  border-radius: 10px;
+  height: 55px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  color: #000;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.pro-key:active, .pro-btn:active {
+  background: #d1d1d6;
+}
+
+/* --- ОТВЕТ ИИ --- */
+.pro-ai-answer-card {
+  margin: 15px;
+  background: #f0f7ff;
+  border: 1px solid #cce5ff;
+  border-radius: 15px;
+  padding: 20px;
+}
+
+.pro-ai-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-weight: bold;
+  color: #007aff;
+}
+
+/* --- СТИЛИ ДЛЯ ТЕМ И ТЕОРИИ --- */
+.grade-btn, .topic-btn {
+  padding: 15px;
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--primary-blue);
+  font-weight: bold;
+  cursor: pointer;
+  text-align: center;
+}
+
+.back-btn {
+  background: #e5e5ea;
+  color: #333;
+  padding: 8px 15px;
+  border-radius: 8px;
+  border: none;
+  margin-bottom: 15px;
+  font-weight: bold;
+}
+
+.theory-card {
+  background: #fff;
+  border: 1px solid var(--border-color);
+  padding: 20px;
+  border-radius: 15px;
+  line-height: 1.6;
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
