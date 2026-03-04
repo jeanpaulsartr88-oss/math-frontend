@@ -1,6 +1,6 @@
 {
   "files": {
-    "main.css": "/math-frontend/static/css/main.d2684a18.css",
+    "main.css": "/math-frontend/static/css/main.1f21781c.css",
     "main.js": "/math-frontend/static/js/main.5d64f498.js",
     "static/js/453.078fa1db.chunk.js": "/math-frontend/static/js/453.078fa1db.chunk.js",
     "static/media/KaTeX_AMS-Regular.ttf": "/math-frontend/static/media/KaTeX_AMS-Regular.853be92419a6c3766b9a.ttf",
@@ -64,12 +64,12 @@
     "static/media/KaTeX_Size3-Regular.woff": "/math-frontend/static/media/KaTeX_Size3-Regular.7947224e8a9914fa332b.woff",
     "static/media/KaTeX_Size3-Regular.woff2": "/math-frontend/static/media/KaTeX_Size3-Regular.e1951519f6f0596f7356.woff2",
     "index.html": "/math-frontend/index.html",
-    "main.d2684a18.css.map": "/math-frontend/static/css/main.d2684a18.css.map",
+    "main.1f21781c.css.map": "/math-frontend/static/css/main.1f21781c.css.map",
     "main.5d64f498.js.map": "/math-frontend/static/js/main.5d64f498.js.map",
     "453.078fa1db.chunk.js.map": "/math-frontend/static/js/453.078fa1db.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.d2684a18.css",
+    "static/css/main.1f21781c.css",
     "static/js/main.5d64f498.js"
   ]
 }
