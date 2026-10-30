@@ -1,15 +1,38 @@
-import React, { useState, useEffect } from 'react';
-import 'katex/dist/katex.min.css';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import katex from 'katex';
+import 'katex/dist/katex.min.css'; 
+import React, { useState, useEffect, useRef } from 'react';
 import { BlockMath, InlineMath } from 'react-katex';
 import './App.css';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { askGeminiDirectly } from './geminiService';
 
 const tg = window.Telegram ? window.Telegram.WebApp : null;
 
+const renderTheoryHtml = (htmlContent) => {
+  if (!htmlContent) return '';
+  return htmlContent
+    .replace(/<InlineMath\s+math="([\s\S]*?)"\s*\/>/g, (_, math) => {
+      try {
+        return katex.renderToString(math, { displayMode: false, throwOnError: false });
+      } catch (e) {
+        return `<span>${math}</span>`;
+      }
+    })
+    .replace(/<BlockMath\s+math="([\s\S]*?)"\s*\/>/g, (_, math) => {
+      try {
+        return `<div class="katex-block-wrapper" style="text-align: center; margin: 12px 0; overflow-x: auto;">${katex.renderToString(math, { displayMode: true, throwOnError: false })}</div>`;
+      } catch (e) {
+        return `<div>${math}</div>`;
+      }
+    });
+};
+
 // ============================================================================
 // ЧАСТЬ 1: ФУНДАМЕНТАЛЬНАЯ АКАДЕМИЧЕСКАЯ БАЗА "MATH STUDIO" (5-11 КЛАССЫ)
-// Разработано для интерактивного обучения и подготовки к экзаменам.
 // ============================================================================
-
 const COURSE_CONTENT = {
   "5": {
     name: "5 КЛАСС: ОСНОВЫ МАТЕМАТИЧЕСКОГО МЫШЛЕНИЯ",
@@ -284,7 +307,7 @@ const COURSE_CONTENT = {
           <BlockMath math="\\sin^2 \\alpha + \\cos^2 \\alpha = 1" />
         </div>
         <p>Важные табличные значения для первой четверти:</p>
-        <BlockMath math="\\sin 30^\\circ = \\frac{1}{2}; \\quad \\cos 30^\\circ = \\frac{\\sqrt{3}}{2}; \\quad \\tan 45^\\circ = 1" />
+        <BlockMath math="\\sin 30^{\\circ} = \\frac{1}{2}; \\quad \\cos 30^{\\circ} = \\frac{\\sqrt{3}}{2}; \\quad \\tan 45^{\\circ} = 1" />
       `
     }
   },
@@ -293,7 +316,7 @@ const COURSE_CONTENT = {
     topics: {
       "Тригонометрические уравнения и круг": `
         <p>В 10 классе тригонометрия выходит за пределы треугольника на <b>тригонометрическую окружность</b> радиуса R=1.</p>
-        <p>Косинус — это ось абсцисс (OX), Синус — ось ординат (OY). Углы измеряются в радианах (<InlineMath math="\\pi = 180^\\circ" />).</p>
+        <p>Косинус — это ось абсцисс (OX), Синус — ось ординат (OY). Углы измеряются в радианах (<InlineMath math="\\pi = 180^{\\circ}" />).</p>
         <h4>Решение простейших уравнений:</h4>
         <table class="theory-table">
           <tr><td>Уравнение</td><td>Общее решение</td><td>Исключения (частные случаи)</td></tr>
@@ -384,118 +407,293 @@ const COURSE_CONTENT = {
   }
 };
 
-// КОНЕЦ ЧАСТИ 1. Дальше пойдет логика React.
-// ============================================================================
-// ============================================================================
-// ============================================================================
 // ============================================================================
 // ЧАСТЬ 2: ПРОФЕССИОНАЛЬНЫЙ ИНТЕРФЕЙС УРОВНЯ ВЫСШЕЙ МАТЕМАТИКИ
 // ============================================================================
 
 function App() {
   const [input, setInput] = useState('');
-  const [cursorPos, setCursorPos] = useState(0); // <--- Добавляем память для курсора
+  const [cursorPos, setCursorPos] = useState(0); 
   const [screen, setScreen] = useState('grades'); 
   const [selectedGrade, setSelectedGrade] = useState(null);
   const [selectedTopic, setSelectedTopic] = useState(null);
   
-  // Состояние для 4-х вкладок клавиатуры: 'basic', 'func', 'trig', 'calc'
   const [activeTab, setActiveTab] = useState('basic');
-  const [aiResponse, setAiResponse] = useState(null);
+  
+  const [chatHistory, setChatHistory] = useState(() => {
+    const savedChat = localStorage.getItem('mathStudioChat');
+    if (savedChat) {
+      try {
+        return JSON.parse(savedChat);
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  });
+
   const [isThinking, setIsThinking] = useState(false);
+  const [chatText, setChatText] = useState('');
+  const [tutorProfile, setTutorProfile] = useState('academic');
+  const [showCalculator, setShowCalculator] = useState(false);
+  const [selectedImagePreview, setSelectedImagePreview] = useState(null);
+  const [imageBase64, setImageBase64] = useState(null);
+  const fileInputRef = useRef(null);
+  const abortControllerRef = useRef(null); 
+  const timerRef = useRef(null); 
+  
+  const [isListening, setIsListening] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+
+  // --- СОСТОЯНИЯ ДЛЯ КОМПИЛЯТОРА ---
+  const [showCompiler, setShowCompiler] = useState(false);
+  const [pythonCode, setPythonCode] = useState('# Напиши свой код здесь!\nprint("Hello, Math Studio!")');
+  const [compilerOutput, setCompilerOutput] = useState('');
+  const [isCompiling, setIsCompiling] = useState(false);
+  const pyodideRef = useRef(null); // Ссылка на встроенный движок Python
+
+  // НОВОЕ: Загружаем Python прямо в браузер при открытии приложения
+  useEffect(() => {
+    if (!document.getElementById('pyodide-script')) {
+      const script = document.createElement('script');
+      script.id = 'pyodide-script';
+      script.src = "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js";
+      document.body.appendChild(script);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('mathStudioChat', JSON.stringify(chatHistory));
+  }, [chatHistory]);
+
+  const chatContainerRef = useRef(null);
+
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [chatHistory, isThinking, showCalculator, selectedImagePreview, showCompiler]);
 
   useEffect(() => {
     if (tg) {
       tg.ready();
       tg.expand();
-      tg.setHeaderColor('#ffffff'); // Белая шапка как на фото
+      tg.setHeaderColor('#ffffff');
       tg.setBackgroundColor('#ffffff');
     }
   }, []);
 
- const insertAtCursor = (key) => {
-    if (key === 'C') {
-      setInput('');
-      setCursorPos(0);
-    } else if (key === '⌫') {
-      // Удаляем символ перед курсором
-      if (cursorPos > 0) {
-        setInput(prev => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
-        setCursorPos(prev => prev - 1);
+  const stopGeneration = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsThinking(false);
+    setChatHistory(prev => [...prev, { role: 'model', content: "🛑 *Генерация остановлена пользователем.*" }]);
+  };
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          const MAX_SIDE = 1000; 
+          if (width > height) {
+            if (width > MAX_SIDE) { height *= MAX_SIDE / width; width = MAX_SIDE; }
+          } else {
+            if (height > MAX_SIDE) { width *= MAX_SIDE / height; height = MAX_SIDE; }
+          }
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.4);
+          setSelectedImagePreview(compressedBase64);
+          setImageBase64(compressedBase64.split(',')[1]);
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = null;
+  };
+  
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { alert("Ваш браузер не поддерживает голосовой ввод 😔"); return; }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ru-RU'; 
+    recognition.interimResults = false; 
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setChatText(prev => prev ? prev + " " + transcript : transcript);
+    };
+    recognition.onerror = (event) => { console.error("Ошибка микрофона:", event.error); setIsListening(false); };
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+  };
+
+  const insertAtCursor = (key) => {
+    if (key === 'C' || key === 'AC') { setInput(''); setCursorPos(0); return; } 
+    if (key === '⌫') {
+      if (cursorPos > 0) { setInput(prev => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos)); setCursorPos(prev => prev - 1); }
+      return;
+    } 
+    if (key === '←') { if (cursorPos > 0) setCursorPos(prev => prev - 1); return; } 
+    if (key === '→') { if (cursorPos < input.length) setCursorPos(prev => prev + 1); return; }
+
+    let insertString = key;
+    let cursorShift = key.length;
+
+    if (key === '\\frac{}{}') { insertString = '\\frac{}{}'; cursorShift = 6; } 
+    else if (key === '\\sqrt{') { insertString = '\\sqrt{}'; cursorShift = 6; } 
+    else if (key === '\\^{') { insertString = '^{}'; cursorShift = 2; } 
+    else if (key === '\\lim_{x \\to }') { insertString = '\\lim_{x \\to }{}'; cursorShift = 12; } 
+    else if (key === '\\int') { insertString = '\\int_{}^{} '; cursorShift = 6; } 
+    else if (key === '(') { insertString = '()'; cursorShift = 1; } 
+    else if (key === '\\sin(' || key === '\\cos(' || key === '\\tan(' || key === '\\ln(' || key === '\\log(') {
+      insertString = key + ')'; cursorShift = key.length; 
+    }
+
+    setInput(prev => prev.slice(0, cursorPos) + insertString + prev.slice(cursorPos));
+    setCursorPos(prev => prev + cursorShift);
+  };
+
+  const sendToServer = async (rawText, isMath = true) => {
+    if (!rawText.trim() && !imageBase64) return; 
+    const currentQuery = isMath && rawText ? `$$${rawText}$$` : rawText;
+    const newHistory = [...chatHistory, { role: 'user', content: currentQuery, imageUrl: selectedImagePreview }];
+    
+    setChatHistory(newHistory);
+    setIsThinking(true);
+    setScreen('chat'); 
+
+    const currentImageToSend = imageBase64; 
+
+    if (isMath) { setInput(''); setCursorPos(0); setShowCalculator(false); } 
+    else { setChatText(''); }
+    
+    setSelectedImagePreview(null);
+    setImageBase64(null);
+
+    abortControllerRef.current = new AbortController(); 
+
+    try {
+      const answer = await askGeminiDirectly({
+        query: currentQuery,
+        history: chatHistory,
+        profile: tutorProfile,
+        imageBase64: currentImageToSend,
+        signal: abortControllerRef.current.signal
+      });
+
+      setChatHistory(prev => [...prev, { role: 'model', content: answer }]);
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        setChatHistory(prev => [...prev, { role: 'model', content: "Ошибка: " + e.message }]);
       }
-    } else if (key === '←') {
-      // Двигаем курсор влево
-      if (cursorPos > 0) setCursorPos(prev => prev - 1);
-    } else if (key === '→') {
-      // Двигаем курсор вправо
-      if (cursorPos < input.length) setCursorPos(prev => prev + 1);
-    } else {
-      // Вставляем новый символ ровно в позицию курсора
-      setInput(prev => prev.slice(0, cursorPos) + key + prev.slice(cursorPos));
-      setCursorPos(prev => prev + key.length);
+    } finally {
+      setIsThinking(false);
+      abortControllerRef.current = null; 
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
     }
   };
 
- const sendToServer = async () => {
-    if (!input) {
-      alert("Сначала введите задачу!");
-      return;
-    }
-    
-    setIsThinking(true);
-    setAiResponse(null); // Очищаем прошлый ответ
+  // --- ЛОГИКА PYTHON КОМПИЛЯТОРА (ТЕПЕРЬ РАБОТАЕТ ЛОКАЛЬНО В БРАУЗЕРЕ) ---
+  const runPythonCode = async () => {
+    if (!pythonCode.trim()) return;
+    setIsCompiling(true);
+    setCompilerOutput('⏳ Запускаем движок Python (первый запуск может занять пару секунд)...');
 
     try {
-      // Идеально чистый запрос! React сам перекинет его на порт 5000 (Flask)
-      const response = await fetch('https://math-api-studio.onrender.com/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: input })
-      });
-      
-      const data = await response.json();
-      if (data.status === 'success') {
-        setAiResponse(data.answer);
-      } else {
-        setAiResponse("Ошибка: " + data.answer);
+      // 1. Проверяем, скачался ли движок Python
+      if (!pyodideRef.current) {
+        if (!window.loadPyodide) {
+          setCompilerOutput('❌ Библиотека Python еще загружается из сети. Подождите пару секунд и нажмите "Запустить код" снова.');
+          setIsCompiling(false);
+          return;
+        }
+        // 2. Инициализируем Python
+        pyodideRef.current = await window.loadPyodide();
       }
-    } catch (e) {
-      setAiResponse("Ошибка связи с сервером Math Studio.");
+
+      // 3. Перенаправляем потоки вывода (чтобы функция print() выводила текст в нашу консоль)
+      await pyodideRef.current.runPythonAsync(`
+import sys
+import io
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+      `);
+
+      // 4. Запускаем код ученика
+      await pyodideRef.current.runPythonAsync(pythonCode);
+
+      // 5. Забираем результаты
+      const stdout = pyodideRef.current.runPython("sys.stdout.getvalue()");
+      const stderr = pyodideRef.current.runPython("sys.stderr.getvalue()");
+
+      if (stderr) {
+        setCompilerOutput(stderr);
+      } else {
+        setCompilerOutput(stdout || '>_ Выполнено (без текстового вывода)');
+      }
+    } catch (err) {
+      // Ловим синтаксические и логические ошибки Python (Traceback)
+      setCompilerOutput(err.toString());
     } finally {
-      setIsThinking(false);
+      setIsCompiling(false);
     }
-  };// --- РЕНДЕР 1: ВЫБОР КЛАССА ---
+  };
+
+  const askTutorAboutError = () => {
+    const query = `Я написал код на Python:\n\`\`\`python\n${pythonCode}\n\`\`\`\nПри запуске я получил ошибку/вывод:\n\`\`\`text\n${compilerOutput}\n\`\`\`\nОбъясни, где я ошибся, но не пиши готовый код сразу.`;
+    setShowCompiler(false);
+    sendToServer(query, false);
+  };
+
+  // --- РЕНДЕР ИНТЕРФЕЙСА ---
+ // --- РЕНДЕР ИНТЕРФЕЙСА ---
   const renderGrades = () => (
     <div className="fade-in" style={{padding: '20px'}}>
-      <h2 style={{color: '#333'}}>База знаний Math Studio</h2>
-      <p style={{color: '#666', marginBottom: '20px'}}>Выберите класс для изучения теории</p>
-      
+      <h2 style={{color: isDarkMode ? '#fff' : '#333'}}>База знаний Math Studio</h2>
+      <p style={{color: isDarkMode ? '#bbb' : '#666', marginBottom: '20px'}}>Выберите класс для изучения теории</p>
       <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px'}}>
         {Object.keys(COURSE_CONTENT).map(g => (
           <button key={g} 
-                  style={{padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0', background: '#fff', fontSize: '1.2rem', fontWeight: 'bold', color: '#007aff', cursor: 'pointer', boxShadow: '0 2px 5px rgba(0,0,0,0.05)'}} 
+                  style={{padding: '20px', borderRadius: '12px', border: '1px solid', borderColor: isDarkMode ? '#444' : '#e0e0e0', background: isDarkMode ? '#2c2c2e' : '#fff', fontSize: '1.2rem', fontWeight: 'bold', color: isDarkMode ? '#64d2ff' : '#007aff', cursor: 'pointer', boxShadow: '0 2px 5px rgba(0,0,0,0.05)'}} 
                   onClick={() => { setSelectedGrade(g); setScreen('topics'); }}>
             {g} класс
           </button>
         ))}
       </div>
-      
-      <button className="pro-submit-btn" style={{width: '100%', marginTop: '30px', marginLeft: '0'}} onClick={() => setScreen('calculator')}>
-        🧮 Открыть смарт-калькулятор
-      </button>
     </div>
   );
 
-  // --- РЕНДЕР 2: ВЫБОР ТЕМЫ ---
   const renderTopics = () => (
     <div className="fade-in" style={{padding: '20px'}}>
-      <button onClick={() => setScreen('grades')} style={{marginBottom: '20px', padding: '10px 15px', background: '#e0e3e5', color: '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>← К классам</button>
-      <h3 style={{color: '#333', marginBottom: '15px'}}>{COURSE_CONTENT[selectedGrade].name}</h3>
-      
+      <button onClick={() => setScreen('grades')} style={{marginBottom: '20px', padding: '10px 15px', background: isDarkMode ? '#2c2c2e' : '#e0e3e5', color: isDarkMode ? '#fff' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>← К классам</button>
+      <h3 style={{color: isDarkMode ? '#fff' : '#333', marginBottom: '15px'}}>{COURSE_CONTENT[selectedGrade].name}</h3>
       <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}>
         {Object.keys(COURSE_CONTENT[selectedGrade].topics).map(t => (
           <button key={t} 
-                  style={{padding: '15px', borderRadius: '10px', border: '1px solid #e0e0e0', background: '#fff', textAlign: 'left', fontSize: '1.1rem', color: '#333', cursor: 'pointer'}} 
+                  style={{padding: '15px', borderRadius: '10px', border: '1px solid', borderColor: isDarkMode ? '#444' : '#e0e0e0', background: isDarkMode ? '#2c2c2e' : '#fff', textAlign: 'left', fontSize: '1.1rem', color: isDarkMode ? '#e0e0e0' : '#333', cursor: 'pointer'}} 
                   onClick={() => { setSelectedTopic(t); setScreen('theory'); }}>
             📚 {t}
           </button>
@@ -504,130 +702,215 @@ function App() {
     </div>
   );
 
-  // --- РЕНДЕР 3: ЧТЕНИЕ ТЕОРИИ ---
   const renderTheory = () => (
-    <div className="fade-in" style={{padding: '20px', height: '100vh', overflowY: 'auto'}}>
-      <button onClick={() => setScreen('topics')} style={{marginBottom: '20px', padding: '10px 15px', background: '#e0e3e5', color: '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>← К темам</button>
-      
-      <div style={{background: '#fff', padding: '20px', borderRadius: '12px', border: '1px solid #e0e0e0', marginBottom: '20px', color: '#333', lineHeight: '1.6', fontSize: '1.1rem', boxShadow: '0 2px 8px rgba(0,0,0,0.05)'}}>
-        <h3 style={{color: '#007aff', borderBottom: '2px solid #f0f0f0', paddingBottom: '10px', marginBottom: '15px'}}>{selectedTopic}</h3>
-        <div className="theory-text" dangerouslySetInnerHTML={{ __html: COURSE_CONTENT[selectedGrade].topics[selectedTopic] }} />
+    <div className="fade-in" style={{padding: '20px', height: '100%', overflowY: 'auto'}}>
+      <button onClick={() => setScreen('topics')} style={{marginBottom: '20px', padding: '10px 15px', background: isDarkMode ? '#2c2c2e' : '#e0e3e5', color: isDarkMode ? '#fff' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold'}}>← К темам</button>
+      <div style={{background: isDarkMode ? '#1e1e1e' : '#fff', padding: '20px', borderRadius: '12px', border: '1px solid', borderColor: isDarkMode ? '#333' : '#e0e0e0', marginBottom: '20px', color: isDarkMode ? '#e0e0e0' : '#333', lineHeight: '1.6', fontSize: '1.1rem', boxShadow: '0 2px 8px rgba(0,0,0,0.05)'}}>
+        <h3 style={{color: isDarkMode ? '#64d2ff' : '#007aff', borderBottom: '2px solid', borderBottomColor: isDarkMode ? '#333' : '#f0f0f0', paddingBottom: '10px', marginBottom: '15px'}}>{selectedTopic}</h3>
+        <div className="theory-text" dangerouslySetInnerHTML={{ __html: renderTheoryHtml(COURSE_CONTENT[selectedGrade].topics[selectedTopic]) }} />
       </div>
-      
-      <button className="pro-submit-btn" style={{width: '100%', marginLeft: '0', marginBottom: '40px'}} onClick={() => setScreen('calculator')}>
-        Перейти к решению задачи →
+      <button className="pro-submit-btn" style={{width: '100%', marginLeft: '0', marginBottom: '40px'}} onClick={() => { setScreen('chat'); setShowCalculator(true); }}>
+        Решить задачу с Тьютором →
       </button>
     </div>
   );
 
-  // ... (Ваши renderGrades, renderTopics, renderTheory остаются здесь) ...
-
- const renderCalculator = () => {
+  const renderChat = () => {
     return (
-      <div className="pro-calc-container">
-        {/* Индикатор загрузки или ответ */}
-        {aiResponse ? (
-          <div className="pro-ai-answer-card fade-in">
-            <div className="pro-ai-header">
-              <span>💡 Решение Math Studio</span>
-              <button className="pro-ai-close" onClick={() => setAiResponse(null)}>✕</button>
-            </div>
-            <div className="pro-ai-content" dangerouslySetInnerHTML={{ __html: aiResponse }} />
+      <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        
+        {/* ШАПКА ЧАТА */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', padding: '10px', background: isDarkMode ? '#1e1e1e' : '#f8f9fa', borderBottom: '1px solid', borderBottomColor: isDarkMode ? '#333' : '#e0e0e0', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button onClick={() => setTutorProfile('academic')} style={{ padding: '8px 12px', borderRadius: '15px', border: 'none', background: tutorProfile === 'academic' ? '#007aff' : (isDarkMode ? '#2c2c2e' : '#e0e3e5'), color: tutorProfile === 'academic' ? '#fff' : (isDarkMode ? '#bbb' : '#555'), cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold', transition: '0.2s' }}>
+            🎓 Академик
+          </button>
+          <button onClick={() => setTutorProfile('ent')} style={{ padding: '8px 12px', borderRadius: '15px', border: 'none', background: tutorProfile === 'ent' ? '#ff3b30' : (isDarkMode ? '#2c2c2e' : '#e0e3e5'), color: tutorProfile === 'ent' ? '#fff' : (isDarkMode ? '#bbb' : '#555'), cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold', transition: '0.2s' }}>
+            🎯 ЕНТ-Тренер
+          </button>
+          <button onClick={() => setTutorProfile('focus')} style={{ padding: '8px 12px', borderRadius: '15px', border: 'none', background: tutorProfile === 'focus' ? '#34c759' : (isDarkMode ? '#2c2c2e' : '#e0e3e5'), color: tutorProfile === 'focus' ? '#fff' : (isDarkMode ? '#bbb' : '#555'), cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold', transition: '0.2s' }}>
+            ⚡ Фокус-Тьютор
+          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+            <button onClick={() => setIsDarkMode(!isDarkMode)} style={{ padding: '8px 12px', borderRadius: '15px', border: 'none', background: isDarkMode ? '#333' : '#e0e3e5', color: isDarkMode ? '#fff' : '#555', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold', transition: '0.2s' }} title="Сменить тему">
+              {isDarkMode ? '🌙' : '☀️'}
+            </button>
+            <button onClick={() => { if (window.confirm('Удалить всю историю переписки с Тьютором?')) { setChatHistory([]); } }} style={{ padding: '8px 12px', borderRadius: '15px', border: 'none', background: isDarkMode ? '#4a1c1c' : '#ffebee', color: '#d32f2f', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 'bold', transition: '0.2s' }} title="Очистить историю чата">
+              🗑️
+            </button>
           </div>
-        ) : (
-          <div className="pro-keyboard-area fade-in">
-            {/* Поле ввода */}
-            <div className="pro-display">
+        </div>
+
+        <div ref={chatContainerRef} style={{ flexGrow: 1, overflowY: 'auto', padding: '15px', display: 'flex', flexDirection: 'column', gap: '15px', background: isDarkMode ? '#121212' : '#fff' }}>
+          {chatHistory.length === 0 && (
+            <div style={{ textAlign: 'center', color: isDarkMode ? '#777' : '#999', marginTop: '40px' }}>
+              <h3>Наставник готов!</h3>
+              <p>Напишите сообщение или нажмите на 🧮 для ввода формул.</p>
+            </div>
+          )}
+          {chatHistory.map((msg, idx) => (
+            <div key={idx} style={{
+              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+              background: msg.role === 'user' ? '#007aff' : (isDarkMode ? '#2c2c2e' : '#f0f4f8'),
+              color: msg.role === 'user' ? '#fff' : (isDarkMode ? '#e0e0e0' : '#333'),
+              padding: '12px 18px', borderRadius: '18px',
+              borderBottomRightRadius: msg.role === 'user' ? '4px' : '18px',
+              borderBottomLeftRadius: msg.role === 'model' ? '4px' : '18px',
+              maxWidth: '85%', boxShadow: '0 2px 5px rgba(0,0,0,0.05)',
+              fontSize: '1.1rem', lineHeight: '1.5', wordBreak: 'break-word', overflowWrap: 'break-word'
+            }}>
+              {msg.imageUrl && <img src={msg.imageUrl} alt="Upload" style={{ width: '100%', borderRadius: '10px', marginBottom: msg.content ? '10px' : '0' }} />}
+              {msg.content && (
+                <ReactMarkdown 
+                  remarkPlugins={[remarkMath]} 
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
+                    code({node, inline, className, children, ...props}) {
+                      const match = /language-(\w+)/.exec(className || '');
+                      const rawCode = String(children).replace(/\n$/, '');
+                      
+                      if (!inline && match && (match[1] === 'graph' || match[1] === 'json')) {
+                        try {
+                          const chartData = JSON.parse(rawCode);
+                          if (Array.isArray(chartData) && chartData.length > 0 && 'x' in chartData[0]) {
+                            return (
+                              <div style={{ width: '100%', height: '250px', background: isDarkMode ? '#1e1e1e' : '#fff', borderRadius: '8px', padding: '10px', marginTop: '10px', boxShadow: 'inset 0 0 5px rgba(0,0,0,0.2)', border: '1px solid', borderColor: isDarkMode ? '#444' : '#e0e0e0' }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke={isDarkMode ? '#444' : '#e0e0e0'} />
+                                    <XAxis dataKey="x" type="number" domain={['dataMin', 'dataMax']} tick={{fontSize: 12, fill: isDarkMode ? '#aaa' : '#999'}} stroke={isDarkMode ? '#666' : '#999'} />
+                                    <YAxis dataKey="y" type="number" domain={['auto', 'auto']} tick={{fontSize: 12, fill: isDarkMode ? '#aaa' : '#999'}} stroke={isDarkMode ? '#666' : '#999'} />
+                                    <Tooltip 
+                                      contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', background: isDarkMode ? '#333' : '#fff', color: isDarkMode ? '#fff' : '#000'}} 
+                                      labelStyle={{fontWeight: 'bold', color: isDarkMode ? '#64d2ff' : '#333'}}
+                                    />
+                                    <Line type="monotone" dataKey="y" stroke={isDarkMode ? '#64d2ff' : '#007aff'} strokeWidth={3} dot={{r: 3, fill: isDarkMode ? '#64d2ff' : '#007aff', strokeWidth: 2, stroke: isDarkMode ? '#1e1e1e' : '#fff'}} activeDot={{r: 6}} animationDuration={1000} />
+                                  </LineChart>
+                                </ResponsiveContainer>
+                              </div>
+                            );
+                          }
+                        } catch (e) {
+                          console.log("Не удалось распарсить график:", e);
+                        }
+                      }
+                      
+                      return <code className={className} style={{background: isDarkMode ? '#1c1c1e' : '#2d2d2d', color: isDarkMode ? '#64d2ff' : '#e6e6e6', padding: '2px 6px', borderRadius: '4px', fontFamily: 'monospace', border: isDarkMode ? '1px solid #333' : 'none'}} {...props}>{children}</code>;
+                    }
+                  }}
+                >
+                  {msg.content}
+                </ReactMarkdown>
+              )}
+            </div>
+          ))}
+          {isThinking && (
+            <div className="fade-in" style={{ alignSelf: 'flex-start', background: isDarkMode ? '#2c2c2e' : '#f0f4f8', padding: '12px 18px', borderRadius: '18px', color: isDarkMode ? '#bbb' : '#666', display: 'flex', alignItems: 'center', gap: '15px' }}>
+              <span>⏳ Наставник печатает...</span>
+              <button onClick={stopGeneration} style={{ background: '#ff3b30', color: '#fff', border: 'none', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 5px rgba(255,59,48,0.3)' }} title="Остановить генерацию">⏹️</button>
+            </div>
+          )}
+        </div>
+
+        {selectedImagePreview && (
+          <div className="fade-in" style={{ padding: '5px 15px', display: 'flex', alignItems: 'center', gap: '10px', background: isDarkMode ? '#1e1e1e' : '#f8f9fa', borderTop: '1px solid', borderTopColor: isDarkMode ? '#333' : '#e0e0e0' }}>
+            <div style={{ position: 'relative' }}>
+              <img src={selectedImagePreview} alt="preview" style={{ height: '50px', borderRadius: '6px', border: '2px solid #007aff' }} />
+              <button onClick={() => {setSelectedImagePreview(null); setImageBase64(null);}} style={{ position: 'absolute', top: '-5px', right: '-5px', background: '#ff3b30', color: '#fff', border: 'none', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+            </div>
+            <span style={{fontSize: '0.85rem', color: isDarkMode ? '#bbb' : '#666', flexGrow: 1}}>Фото готово к отправке. Напиши текст и жми ➤</span>
+          </div>
+        )}
+
+        {/* НИЖНЯЯ ПАНЕЛЬ ВВОДА */}
+        <div style={{ display: 'flex', padding: '10px', background: isDarkMode ? '#1e1e1e' : '#fff', borderTop: '1px solid', borderTopColor: isDarkMode ? '#333' : '#e0e0e0', alignItems: 'center', gap: '6px' }}>
+          <button onClick={() => {setShowCalculator(!showCalculator); setShowCompiler(false);}} style={{ background: showCalculator ? '#007aff' : (isDarkMode ? '#2c2c2e' : '#f0f4f8'), color: showCalculator ? '#fff' : (isDarkMode ? '#64d2ff' : '#007aff'), border: 'none', borderRadius: '50%', minWidth: '38px', height: '38px', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: '0.2s' }}>🧮</button>
+          
+          <button onClick={() => {setShowCompiler(!showCompiler); setShowCalculator(false);}} style={{ background: showCompiler ? '#34c759' : (isDarkMode ? '#2c2c2e' : '#f0f4f8'), color: showCompiler ? '#fff' : (isDarkMode ? '#34c759' : '#34c759'), border: 'none', borderRadius: '50%', minWidth: '38px', height: '38px', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: '0.2s' }}>🐍</button>
+
+          <input type="file" accept="image/*" style={{ display: 'none' }} ref={fileInputRef} onChange={handleImageChange} />
+          <button onClick={() => fileInputRef.current.click()} style={{ background: isDarkMode ? '#2c2c2e' : '#f0f4f8', color: isDarkMode ? '#64d2ff' : '#007aff', border: 'none', borderRadius: '50%', minWidth: '38px', height: '38px', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>📷</button>
+          
+          <input type="text" value={chatText} onChange={(e) => setChatText(e.target.value)} placeholder={(showCalculator || showCompiler) ? "Ввод формулы/кода..." : isListening ? "Говорите..." : "Сообщение..."} disabled={showCalculator || showCompiler} style={{ flexGrow: 1, padding: '10px 12px', borderRadius: '20px', border: '1px solid', borderColor: isDarkMode ? '#444' : '#ccc', fontSize: '0.95rem', outline: 'none', background: (showCalculator || showCompiler) ? (isDarkMode ? '#1c1c1e' : '#f0f4f8') : (isDarkMode ? '#2c2c2e' : '#fff'), color: isDarkMode ? '#fff' : '#000', minWidth: '0' }} onKeyDown={(e) => { if (e.key === 'Enter') sendToServer(chatText, false); }} />
+
+          <button onClick={startListening} disabled={showCalculator || showCompiler} style={{ background: isListening ? '#ff3b30' : (isDarkMode ? '#2c2c2e' : '#f0f4f8'), color: isListening ? '#fff' : (isDarkMode ? '#64d2ff' : '#007aff'), border: 'none', borderRadius: '50%', minWidth: '38px', height: '38px', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: (showCalculator || showCompiler) ? 'default' : 'pointer', transition: '0.2s', opacity: (showCalculator || showCompiler) ? 0.5 : 1 }}>{isListening ? '🛑' : '🎤'}</button>
+          <button onClick={() => sendToServer(chatText, false)} disabled={(showCalculator || showCompiler) || (!chatText.trim() && !imageBase64)} style={{ background: ((showCalculator || showCompiler) || (!chatText.trim() && !imageBase64)) ? (isDarkMode ? '#444' : '#ccc') : '#007aff', color: '#fff', border: 'none', borderRadius: '50%', minWidth: '38px', height: '38px', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: ((showCalculator || showCompiler) || (!chatText.trim() && !imageBase64)) ? 'default' : 'pointer', transition: '0.2s' }}>➤</button>
+        </div>
+
+        {/* КЛАВИАТУРА */}
+        {showCalculator && (
+          <div className="pro-keyboard-area fade-in" style={{ background: isDarkMode ? '#1c1c1e' : '#f0f4f8', paddingTop: '15px', borderTop: '1px solid', borderTopColor: isDarkMode ? '#333' : '#e0e0e0' }}>
+            <div className="pro-display" style={{ margin: '0 10px 10px 10px', background: isDarkMode ? '#2c2c2e' : '#fff', borderColor: isDarkMode ? '#444' : '#e5e5ea' }}>
               <div className="pro-display-main" style={{ width: '100%', overflowX: 'auto', paddingBottom: '10px' }}>
-                {input === '' ? (
-                  <div className="pro-placeholder">
-                    <BlockMath math="\color{#007aff}{|}" />
-                  </div>
-                ) : (
-                  <div className="pro-latex-view">
-                    <BlockMath 
-                      math={input.slice(0, cursorPos) + '\\color{#007aff}{|}' + input.slice(cursorPos)} 
-                      renderError={() => (
-                        <BlockMath 
-                          math={input} 
-                          renderError={() => <span style={{color: '#b0b0b0'}}>...</span>} 
-                        />
-                      )}
-                    />
-                  </div>
-                )}
+                {input === '' ? <div className="pro-placeholder"><BlockMath math="\color{#007aff}{|}" /></div> : <div className="pro-latex-view" style={{color: isDarkMode ? '#fff' : '#000'}}><BlockMath math={input.slice(0, cursorPos) + '\\color{#007aff}{|}' + input.slice(cursorPos)} renderError={() => <BlockMath math={input} renderError={() => <span style={{color: '#b0b0b0'}}>...</span>} />} /></div>}
               </div>
             </div>
-
-            {/* Кнопка отправки */}
-            <button className="pro-submit-btn" onClick={sendToServer} disabled={isThinking}>
-              {isThinking ? '⏳ Анализируем...' : 'Отправить задачу ИИ-тьютору'}
-            </button>
-
-            <div className="pro-toolbar">
-              <button className="pro-btn pro-btn-secondary" onClick={() => setInput('')}>AC</button>
-              <button className="pro-btn pro-btn-secondary" onClick={() => {
-                if (cursorPos > 0) {
-                  setInput(input.slice(0, cursorPos - 1) + input.slice(cursorPos));
-                  setCursorPos(cursorPos - 1);
-                }
-              }}>⌫</button>
-              <button className="pro-btn pro-btn-secondary" onClick={() => setCursorPos(Math.max(0, cursorPos - 1))}>←</button>
-              <button className="pro-btn pro-btn-secondary" onClick={() => setCursorPos(Math.min(input.length, cursorPos + 1))}>→</button>
+            <div style={{ padding: '0 10px' }}><button className="pro-submit-btn" style={{ margin: '0 0 10px 0', width: '100%' }} onClick={() => sendToServer(input, true)} disabled={isThinking || input === ''}>{isThinking ? '⏳ Отправляем...' : 'Отправить формулу'}</button></div>
+            <div className="pro-toolbar" style={{ margin: '0 10px 10px 10px' }}>
+              <button className="pro-btn pro-btn-secondary" style={{background: isDarkMode ? '#3a3a3c' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#555' : '#d1d1d6'}} onClick={() => setInput('')}>AC</button>
+              <button className="pro-btn pro-btn-secondary" style={{background: isDarkMode ? '#3a3a3c' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#555' : '#d1d1d6'}} onClick={() => { if (cursorPos > 0) { setInput(input.slice(0, cursorPos - 1) + input.slice(cursorPos)); setCursorPos(cursorPos - 1); }}}>⌫</button>
+              <button className="pro-btn pro-btn-secondary" style={{background: isDarkMode ? '#3a3a3c' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#555' : '#d1d1d6'}} onClick={() => setCursorPos(Math.max(0, cursorPos - 1))}>←</button>
+              <button className="pro-btn pro-btn-secondary" style={{background: isDarkMode ? '#3a3a3c' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#555' : '#d1d1d6'}} onClick={() => setCursorPos(Math.min(input.length, cursorPos + 1))}>→</button>
             </div>
-
-            <div className="pro-tabs">
-              <button className={activeTab === 'basic' ? 'active' : ''} onClick={() => setActiveTab('basic')}>123</button>
-              <button className={activeTab === 'functions' ? 'active' : ''} onClick={() => setActiveTab('functions')}>f(x)</button>
-              <button className={activeTab === 'letters' ? 'active' : ''} onClick={() => setActiveTab('letters')}>abc</button>
+            <div className="pro-tabs" style={{ margin: '0 10px', background: isDarkMode ? '#2c2c2e' : '#eeeeef' }}>
+              <button className={activeTab === 'basic' ? 'active' : ''} style={{color: isDarkMode ? (activeTab==='basic'?'#fff':'#aaa') : (activeTab==='basic'?'#000':'#8e8e93'), background: activeTab==='basic'?(isDarkMode?'#444':'#fff'):'transparent'}} onClick={() => setActiveTab('basic')}>123</button>
+              <button className={activeTab === 'functions' ? 'active' : ''} style={{color: isDarkMode ? (activeTab==='functions'?'#fff':'#aaa') : (activeTab==='functions'?'#000':'#8e8e93'), background: activeTab==='functions'?(isDarkMode?'#444':'#fff'):'transparent'}} onClick={() => setActiveTab('functions')}>f(x)</button>
+              <button className={activeTab === 'letters' ? 'active' : ''} style={{color: isDarkMode ? (activeTab==='letters'?'#fff':'#aaa') : (activeTab==='letters'?'#000':'#8e8e93'), background: activeTab==='letters'?(isDarkMode?'#444':'#fff'):'transparent'}} onClick={() => setActiveTab('letters')}>abc</button>
             </div>
-
-            <div className="pro-keys-container">
-              {activeTab === 'basic' && (
-                <div className="pro-grid-basic">
-                  {['7','8','9','\\div','4','5','6','\\times','1','2','3','-','0','.','=','+'].map((key) => (
-                    <button key={key} className="pro-key" onClick={() => insertAtCursor(key)}>
-                      <InlineMath math={key} />
-                    </button>
-                  ))}
-                </div>
-              )}
-              {activeTab === 'functions' && (
-                <div className="pro-grid-6x4">
-                  {['\\sin(','\\cos(','\\tan(','\\log(','\\ln(','\\sqrt{','\\pi','e','\\^2','\\^{','|','}','(',')','\\frac{}{}','\\int','\\lim_{x \\to }','\\sum','\\infty','!'].map((key) => (
-                    <button key={key} className="pro-key" onClick={() => insertAtCursor(key)}>
-                      <InlineMath math={key === '\\frac{}{}' ? '\\frac{a}{b}' : key} />
-                    </button>
-                  ))}
-                </div>
-              )}
-              {activeTab === 'letters' && (
-                <div className="pro-grid-6x4">
-                  {['x','y','z','a','b','c','d','k','n','m','p','q','r','s','t','u','v','w','\\alpha','\\beta','\\theta'].map((key) => (
-                    <button key={key} className="pro-key" onClick={() => insertAtCursor(key)}>
-                      <InlineMath math={key} />
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="pro-keys-container" style={{ margin: '0 10px 10px 10px', background: isDarkMode ? '#1c1c1e' : '#f2f2f7' }}>
+              {activeTab === 'basic' && <div className="pro-grid-basic">{['7','8','9','\\div','4','5','6','\\times','1','2','3','-','0','.','=','+'].map((key) => <button key={key} className="pro-key" style={{background: isDarkMode ? '#2c2c2e' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#444' : '#d1d1d6'}} onClick={() => insertAtCursor(key)}><InlineMath math={key} /></button>)}</div>}
+              {activeTab === 'functions' && <div className="pro-grid-6x4">{['\\sin(','\\cos(','\\tan(','\\log(','\\ln(','\\sqrt{','\\pi','e','\\^2','\\^{','|','}','(','\\frac{}{}','\\int','\\lim_{x \\to }','\\sum','\\infty','!'].map((key) => <button key={key} className="pro-key" style={{background: isDarkMode ? '#2c2c2e' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#444' : '#d1d1d6'}} onClick={() => insertAtCursor(key)}><InlineMath math={key === '\\frac{}{}' ? '\\frac{a}{b}' : key === '\\^{' ? 'x^y' : key} /></button>)}</div>}
+              {activeTab === 'letters' && <div className="pro-grid-6x4">{['x','y','z','a','b','c','d','k','n','m','p','q','r','s','t','u','v','w','\\alpha','\\beta','\\theta'].map((key) => <button key={key} className="pro-key" style={{background: isDarkMode ? '#2c2c2e' : '#fff', color: isDarkMode ? '#fff' : '#000', borderColor: isDarkMode ? '#444' : '#d1d1d6'}} onClick={() => insertAtCursor(key)}><InlineMath math={key} /></button>)}</div>}
             </div>
           </div>
         )}
+
+        {showCompiler && (
+          <div className="fade-in" style={{ background: '#1e1e1e', padding: '15px', borderTop: '1px solid #333', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 'bold', color: '#34c759' }}>🐍 Python Редактор</span>
+              <button onClick={() => setShowCompiler(false)} style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: '1.2rem' }}>✕</button>
+            </div>
+            <textarea value={pythonCode} onChange={(e) => setPythonCode(e.target.value)} style={{ width: '100%', height: '120px', background: '#2d2d2d', color: '#e6e6e6', border: '1px solid #444', borderRadius: '8px', padding: '10px', fontFamily: 'monospace', fontSize: '0.95rem', outline: 'none', resize: 'none' }} spellCheck="false" />
+            <button onClick={runPythonCode} disabled={isCompiling} style={{ background: '#34c759', color: '#fff', border: 'none', borderRadius: '8px', padding: '10px', fontWeight: 'bold', cursor: isCompiling ? 'default' : 'pointer', opacity: isCompiling ? 0.7 : 1 }}>
+              {isCompiling ? '⏳ Запуск...' : '▶ Запустить код'}
+            </button>
+            <div style={{ background: '#000', borderRadius: '8px', padding: '10px', minHeight: '60px', maxHeight: '150px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.9rem', color: (compilerOutput.includes('Error') || compilerOutput.includes('Traceback') || compilerOutput.includes('Exception')) ? '#ff3b30' : '#fff', whiteSpace: 'pre-wrap' }}>
+              {compilerOutput || '>_ Консоль готова'}
+            </div>
+            {(compilerOutput.includes('Error') || compilerOutput.includes('Traceback') || compilerOutput.includes('Exception')) && (
+              <button onClick={askTutorAboutError} style={{ background: '#ff3b30', color: '#fff', border: 'none', borderRadius: '8px', padding: '10px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', justifyContent: 'center', gap: '8px', alignItems: 'center', marginTop: '5px' }}>
+                <span>🆘 Спросить Тьютора об ошибке</span>
+              </button>
+            )}
+          </div>
+        )}
+
+      </div>
+    );
+  };
+
+  return (
+    <div className={`app-shell ${isDarkMode ? 'dark-theme' : ''}`} style={{ height: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden', background: isDarkMode ? '#121212' : '#fff' }}>
+      <div style={{ height: 'calc(100% - 60px)', overflowY: 'auto' }}>
+        {(screen === 'grades' || screen === 'topics' || screen === 'theory') && (
+          <>
+            {screen === 'grades' && renderGrades()}
+            {screen === 'topics' && renderTopics()}
+            {screen === 'theory' && renderTheory()}
+          </>
+        )}
+        {screen === 'chat' && renderChat()}
+      </div>
+      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '60px', background: isDarkMode ? '#1e1e1e' : '#fff', borderTop: '1px solid', borderTopColor: isDarkMode ? '#333' : '#e0e0e0', display: 'flex', justifyContent: 'space-around', alignItems: 'center', boxShadow: '0 -2px 10px rgba(0,0,0,0.05)', zIndex: 1000 }}>
+        <button onClick={() => setScreen('grades')} style={{ background: 'none', border: 'none', color: (screen === 'grades' || screen === 'topics' || screen === 'theory') ? (isDarkMode ? '#64d2ff' : '#007aff') : (isDarkMode ? '#888' : '#999'), display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer', width: '50%' }}>
+          <span style={{fontSize: '1.5rem'}}>📚</span><span style={{fontSize: '0.7rem', fontWeight: 'bold'}}>Теория</span>
+        </button>
+        <button onClick={() => setScreen('chat')} style={{ background: 'none', border: 'none', color: screen === 'chat' ? (isDarkMode ? '#64d2ff' : '#007aff') : (isDarkMode ? '#888' : '#999'), display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer', width: '50%' }}>
+          <span style={{fontSize: '1.5rem'}}>💬</span><span style={{fontSize: '0.7rem', fontWeight: 'bold'}}>Тьютор</span>
+        </button>
+      </div>
     </div>
   );
-}; // <--- УБЕДИТЕСЬ, что здесь только ОДНА такая закрывающая пара скобок.
-
-// После этой скобки НЕ ДОЛЖНО быть других '}', пока не пройдет финальный return!
-
-return (
-  <div className="app-shell">
-    {/* Если экран 'grades' — рисуем меню классов. И так далее: */}
-    {screen === 'grades' && renderGrades()}
-    {screen === 'topics' && renderTopics()}
-    {screen === 'theory' && renderTheory()}
-    {screen === 'calculator' && renderCalculator()}
-  </div>
-);
-} // <--- А эта скобка — самая последняя в файле, она закрывает функцию App
+} 
 
 export default App;
